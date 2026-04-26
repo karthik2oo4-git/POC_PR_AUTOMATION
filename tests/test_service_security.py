@@ -186,6 +186,7 @@ class TestLangGraphClient:
                 headers["Authorization"] = f"Bearer {client.token}"
             assert headers["Authorization"] == "Bearer test-token"
 
+    @patch.dict("os.environ", {}, clear=True)
     def test_client_without_token(self) -> None:
         """Test that client works without token."""
         client = LangGraphClient(base_url="http://localhost:8000", token=None)

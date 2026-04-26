@@ -12,24 +12,32 @@ A production-ready PR validation system for GitHub that:
 
 This document is the main guide for understanding, setting up, and extending the project.
 
+> Documentation rule: use only [`README.md`](README.md) and [`NEXT_STEPS.md`](NEXT_STEPS.md). Other legacy markdown files are no longer part of the main reading path.
+
 ## 1. Problem This Project Solves
 
 In a normal team workflow:
 
-1. A developer pulls the latest changes.
+1. A developer pulls the latest changes from the base branch such as `development`.
 2. The developer creates a branch and works on a feature or fix.
-3. The developer raises a pull request.
-4. A reviewer needs to know whether the branch is safe to merge.
+3. The developer raises a pull request back to that base branch.
+4. A reviewer needs to know whether the PR branch is still safe to merge with the latest base branch state.
 
 This project automates that check.
 
 Example:
 
-- Suresh joins a company and works on a branch.
-- Suresh raises a PR to `development`.
+- Suresh joins a company and creates a branch from `development`.
+- The test suite already present in `development` is treated as the required baseline.
+- Suresh makes code changes in his branch and raises a PR back to `development`.
 - The PR validation agent runs automatically.
-- If tests pass and required tests exist for new functions, the PR gets a success status.
-- If anything fails, the PR gets a failure status and a bot comment explains the reason.
+- In CI, the latest base branch is merged into Suresh's PR branch context before validation.
+- The existing tests from `development` are then executed against Suresh's branch changes.
+- If Suresh added a new function, he must also add matching test cases for that new function.
+- The PR passes only when:
+  - the baseline tests from `development` still pass on the PR branch
+  - the new tests added for new functions are present and pass
+- If either condition fails, the PR gets a failure status and a bot comment explains the reason.
 - The reviewer only approves merge when GitHub shows the required status check as successful.
 
 With branch protection enabled, merge stays blocked until the validation check passes.
@@ -40,11 +48,12 @@ With branch protection enabled, merge stays blocked until the validation check p
 PR Raised (opened / synchronize / reopened / ready_for_review)
   -> GitHub Actions workflow starts
   -> checkout PR head SHA
-  -> merge base branch into PR branch inside CI
+  -> merge latest base branch into PR branch inside CI
   -> run setup commands
-  -> run configured tests
+  -> run configured test suite on the merged PR state
 
 IF SETUP OR TESTS FAIL:
+  -> this includes failures from tests that already existed in the base branch
   -> collect logs
   -> send request to LangGraph service in failure mode
   -> update one PR comment with root cause + suggestions
@@ -56,9 +65,10 @@ IF SETUP OR TESTS FAIL:
 
 IF TESTS PASS:
   -> detect changed/new/modified functions via AST + git diff
-  -> check whether newly added functions have matching tests
+  -> check whether newly added functions have matching tests in the PR branch
 
 IF TESTS ARE MISSING:
+  -> this means new code was added without corresponding new tests
   -> send request to LangGraph service in coverage mode
   -> update one PR comment with suggested test cases
   -> mention PR author
@@ -224,16 +234,14 @@ Then fill in your real local secrets such as:
 
 - `LANGGRAPH_SERVICE_TOKEN`
 - `PR_VALIDATION_MODEL`
-- `BOB_API_KEY`
-- `BOB_BASE_URL`
+- `OPENAI_API_KEY`
 - `LANGGRAPH_SERVICE_URL`
 - `GITHUB_TOKEN`
 
 Important:
 - [`.env`](.gitignore) is already ignored by git
 - never commit real secrets
-- all LangGraph analysis calls now default to Bob through [`build_chat_model()`](src/pr_validation_agent/langgraph_service/llm.py:12)
-- you must set `BOB_API_KEY` and `BOB_BASE_URL` manually
+- the default provider path in [`build_chat_model()`](src/pr_validation_agent/langgraph_service/llm.py:12) is OpenAI-compatible via [`openai:gpt-4.1-mini`](src/pr_validation_agent/langgraph_service/llm.py:13)
 - GitHub Actions still needs GitHub repository or organization secrets; the local [`.env`](.env) is only for local development and testing
 
 ## 7.4 Run tests locally
@@ -244,11 +252,58 @@ uv run pytest -q
 
 ## 7.5 Start the LangGraph service locally
 
-Load your local env first, then start the service:
+Load your local env first, then start the service.
+
+Recommended command (uses the app module default host/port, typically `127.0.0.1:8000`):
+
+```bash
+set -a && source .env && set +a
+uv run python -m pr_validation_agent.langgraph_service.app
+```
+
+Equivalent factory-based command if you want port `8080` explicitly:
 
 ```bash
 set -a && source .env && set +a
 uv run uvicorn pr_validation_agent.langgraph_service.app:create_app --factory --host 0.0.0.0 --port 8080
+```
+
+## 7.6 Quick local verification checklist
+
+After starting the service, verify the project in this order:
+
+1. Confirm the service starts without errors.
+2. If you started the service with [`uv run python -m pr_validation_agent.langgraph_service.app`](src/pr_validation_agent/langgraph_service/app.py:131), open `http://localhost:8000/healthz`
+3. If you started the service with [`uv run uvicorn pr_validation_agent.langgraph_service.app:create_app --factory --host 0.0.0.0 --port 8080`](src/pr_validation_agent/langgraph_service/app.py:128), open `http://localhost:8080/healthz`
+4. Confirm the health response is:
+
+```json
+{"status":"ok"}
+```
+
+5. In another terminal, run:
+
+```bash
+uv run pytest -q
+```
+
+6. Confirm all tests pass.
+7. If you want an end-to-end check, connect a test repository with [`.github/pr-validation.yml`](.github/pr-validation.yml) and raise a sample PR.
+
+## 7.7 Shortest possible local start flow
+
+If you just want the minimum commands:
+
+```bash
+uv sync --dev
+set -a && source .env && set +a
+uv run python -m pr_validation_agent.langgraph_service.app
+```
+
+Then in another terminal:
+
+```bash
+uv run pytest -q
 ```
 
 ## 8. Configure a Repository to Use This System
