@@ -78,7 +78,7 @@ class ConcurrencyLimiter:
         """Acquire a concurrency slot."""
         return await self.semaphore.acquire()
 
-    async def release(self) -> None:
+    def release(self) -> None:
         """Release a concurrency slot."""
         self.semaphore.release()
 

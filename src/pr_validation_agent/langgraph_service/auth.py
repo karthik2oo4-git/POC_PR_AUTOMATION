@@ -6,7 +6,8 @@ import os
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthenticationCredentials, HTTPBearer
+from fastapi.security import HTTPBearer
+from fastapi.security.http import HTTPAuthorizationCredentials
 
 security = HTTPBearer(auto_error=False)
 
@@ -19,11 +20,11 @@ def get_service_token() -> str | None:
     return os.getenv("LANGGRAPH_SERVICE_TOKEN")
 
 
-async def verify_token(credentials: Annotated[HTTPAuthenticationCredentials | None, Depends(security)]) -> None:
+async def verify_token(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]) -> None:
     """Verify the Authorization header contains a valid bearer token.
     
     Args:
-        credentials: HTTPAuthenticationCredentials from the request
+        credentials: HTTPAuthorizationCredentials from the request
         
     Raises:
         HTTPException: 401 if token is missing or invalid

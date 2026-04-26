@@ -22,27 +22,19 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout head branch
+      - name: Checkout pull request head
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+      - name: Run PR validation agent
+        uses: ./
         with:
-          version: "0.10.7"
-          enable-cache: true
-
-      - name: Install isolated Python
-        run: uv python install 3.11
-
-      - name: Sync isolated validation environment
-        run: uv sync --frozen
-
-      - name: Validate pull request
+          config-path: .github/pr-validation.yml
+          langgraph-url: ${{ secrets.LANGGRAPH_SERVICE_URL }}
+          python-version: "3.11"
+          uv-version: "0.10.7"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LANGGRAPH_SERVICE_URL: ${{ secrets.LANGGRAPH_SERVICE_URL }}
-          PR_VALIDATION_CONFIG: .github/pr-validation.yml
-        run: uv run pr-validation-ci
+          LANGGRAPH_SERVICE_TOKEN: ${{ secrets.LANGGRAPH_SERVICE_TOKEN }}

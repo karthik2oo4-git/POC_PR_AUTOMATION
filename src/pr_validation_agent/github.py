@@ -104,18 +104,20 @@ class GitHubClient:
             json={"body": body},
         )
 
-    def request_reviewers(self, pr: PullRequestContext, config: AppConfig) -> None:
+    def request_reviewers(self, pr: PullRequestContext, config: AppConfig) -> list[str]:
         if not config.reviewers.request_review_when_passed:
-            return
+            return []
         reviewers = pr.requested_reviewers or config.reviewers.fallback_reviewers
         teams = pr.requested_teams or config.reviewers.fallback_teams
+        mentions = [f"@{reviewer}" for reviewer in reviewers] + [f"@{team}" for team in teams]
         if not reviewers and not teams:
-            return
+            return mentions
         self._request(
             "POST",
             f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/requested_reviewers",
             json={"reviewers": reviewers, "team_reviewers": teams},
         )
+        return mentions
 
     def ensure_label(self, pr: PullRequestContext, name: str) -> None:
         if not name:

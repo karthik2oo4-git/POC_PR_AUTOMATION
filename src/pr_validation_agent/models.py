@@ -110,6 +110,9 @@ class AnalysisResponse(BaseModel):
 class ValidationResult(BaseModel):
     state: ValidationState
     reason: str
+    phase: str = ""
+    outcome_label: str = ""
+    notify_users: list[str] = Field(default_factory=list)
     files_changed: list[str] = Field(default_factory=list)
     new_functions: list[FunctionSymbol] = Field(default_factory=list)
     modified_functions: list[FunctionSymbol] = Field(default_factory=list)

@@ -35,11 +35,12 @@ class TestAuthentication:
         """Test constant-time comparison with different lengths."""
         assert _constant_time_equal("secret", "secret123") is False
 
-    @pytest.mark.asyncio
-    async def test_verify_token_no_auth_required(self) -> None:
+    def test_verify_token_no_auth_required(self) -> None:
         """Test token verification when auth is not configured."""
+        import asyncio
+
         with patch("pr_validation_agent.langgraph_service.auth.get_service_token", return_value=None):
-            await verify_token(None)  # Should not raise
+            asyncio.run(verify_token(None))  # Should not raise
 
 
 class TestRedaction:

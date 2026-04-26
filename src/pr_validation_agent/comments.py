@@ -55,6 +55,7 @@ def render_test_failure_comment(
     author: str,
     test_result: TestRunResult,
     analysis: AnalysisResponse | None,
+    phase: str = "test",
 ) -> str:
     failure = analysis.failure_analysis if analysis else None
     failed_tests = failure.failing_tests if failure else []
@@ -65,10 +66,11 @@ def render_test_failure_comment(
         if failure and failure.suggested_fix
         else "Inspect the failing tests and update the PR before requesting review."
     )
+    phase_title = "Repository setup failures detected" if phase == "setup" else "Test failures detected"
     return f"""{marker}
-@{author} ❌ Test failures detected
+@{author} ❌ {phase_title}
 
-Failed Tests:
+Failed Checks:
 {failed_tests_block}
 
 🤖 Analysis:
@@ -106,7 +108,7 @@ def render_missing_tests_comment(
 ) -> str:
     coverage_analysis = analysis.coverage_analysis if analysis else None
     analyzed_findings = coverage_analysis.missing_tests if coverage_analysis else findings
-    notes = coverage_analysis.notes if coverage_analysis and coverage_analysis.notes else ""
+    notes = coverage_analysis.notes if coverage_analysis and coverage_analysis.notes else "Add or update tests covering the new behavior before requesting review again."
     return f"""{marker}
 @{author} ❌ Missing unit tests for new functions
 
@@ -116,6 +118,7 @@ Newly added functions:
 💡 Suggested Test Cases:
 {_format_suggestions(analyzed_findings)}
 
+Notes:
 {notes}
 """
 
@@ -128,6 +131,7 @@ def render_success_comment(
     modified_functions: list[FunctionSymbol],
     analysis: AnalysisResponse | None,
     code_review_result: TestRunResult | None = None,
+    reviewer_mentions: list[str] | None = None,
 ) -> str:
     summary = analysis.summary if analysis else None
     high_level_summary = (
@@ -139,9 +143,11 @@ def render_success_comment(
     notes = summary.notes if summary else []
     risk_block = "\n".join(f"- {risk}" for risk in risks) if risks else "- None"
     notes_block = "\n".join(f"- {note}" for note in notes) if notes else "- None"
+    reviewer_block = " ".join(reviewer_mentions or [])
+    reviewer_line = f"\nReviewer Notification:\n{reviewer_block}\n" if reviewer_block else ""
     return f"""{marker}
 ✅ All checks passed. Ready for review.
-
+{reviewer_line}
 📌 Changes in this PR:
 
 Files Modified:

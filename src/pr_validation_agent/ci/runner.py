@@ -24,6 +24,7 @@ from pr_validation_agent.models import (
     AnalysisResponse,
     PullRequestContext,
     TestRunResult,
+    ValidationResult,
     ValidationState,
 )
 
@@ -220,7 +221,7 @@ def _enable_auto_merge(github: GitHubClient, pr: PullRequestContext, config: App
         print(f"Auto-merge enablement failed: {exc}", file=sys.stderr)
 
 
-def validate() -> int:
+def validate() -> ValidationResult:
     cwd = Path.cwd()
     config = AppConfig.load(os.getenv("PR_VALIDATION_CONFIG", ".github/pr-validation.yml"))
     github = GitHubClient.from_env()
@@ -240,7 +241,13 @@ def validate() -> int:
         github.upsert_comment(pr, config.comments.marker, body)
         _apply_outcome_label(github, pr, config, config.labels.merge_conflict)
         github.set_status(pr, ValidationState.FAILURE, "Base branch merge failed", config)
-        return 1
+        return ValidationResult(
+            state=ValidationState.FAILURE,
+            reason="Base branch merge failed",
+            phase="merge",
+            outcome_label=config.labels.merge_conflict,
+            notify_users=[f"@{pr.author}"],
+        )
 
     base_ref = f"origin/{pr.base_ref}"
     files = changed_files(cwd, base_ref)
@@ -276,11 +283,23 @@ def validate() -> int:
             author=pr.author,
             test_result=setup_result,
             analysis=analysis,
+            phase="setup",
         )
         github.upsert_comment(pr, config.comments.marker, body)
         _apply_outcome_label(github, pr, config, config.labels.test_failed)
         github.set_status(pr, ValidationState.FAILURE, "Repository setup failed", config)
-        return 1
+        return ValidationResult(
+            state=ValidationState.FAILURE,
+            reason="Repository setup failed",
+            phase="setup",
+            outcome_label=config.labels.test_failed,
+            notify_users=[f"@{pr.author}"],
+            files_changed=files,
+            new_functions=new_functions,
+            modified_functions=modified_functions,
+            test_result=setup_result,
+            analysis=analysis,
+        )
 
     test_result = run_tests(config, cwd)
     if not test_result.passed:
@@ -299,11 +318,23 @@ def validate() -> int:
             author=pr.author,
             test_result=test_result,
             analysis=analysis,
+            phase="test",
         )
         github.upsert_comment(pr, config.comments.marker, body)
         _apply_outcome_label(github, pr, config, config.labels.test_failed)
         github.set_status(pr, ValidationState.FAILURE, "Tests failed", config)
-        return 1
+        return ValidationResult(
+            state=ValidationState.FAILURE,
+            reason="Tests failed",
+            phase="tests",
+            outcome_label=config.labels.test_failed,
+            notify_users=[f"@{pr.author}"],
+            files_changed=files,
+            new_functions=new_functions,
+            modified_functions=modified_functions,
+            test_result=test_result,
+            analysis=analysis,
+        )
 
     coverage = evaluate_new_function_tests(
         cwd=cwd,
@@ -335,7 +366,19 @@ def validate() -> int:
         github.upsert_comment(pr, config.comments.marker, body)
         _apply_outcome_label(github, pr, config, config.labels.needs_tests)
         github.set_status(pr, ValidationState.FAILURE, "Missing unit tests for new functions", config)
-        return 1
+        return ValidationResult(
+            state=ValidationState.FAILURE,
+            reason="Missing unit tests for new functions",
+            phase="coverage",
+            outcome_label=config.labels.needs_tests,
+            notify_users=[f"@{pr.author}"],
+            files_changed=files,
+            new_functions=new_functions,
+            modified_functions=modified_functions,
+            test_result=test_result,
+            coverage_result=coverage,
+            analysis=analysis,
+        )
 
     request = _analysis_request(
         pr=pr,
@@ -348,6 +391,7 @@ def validate() -> int:
     )
     analysis = langgraph.analyze(request, "summary")
     code_review_result = run_code_review(config, cwd)
+    reviewer_mentions = github.request_reviewers(pr, config)
     body = render_success_comment(
         marker=config.comments.marker,
         files_changed=files,
@@ -355,18 +399,31 @@ def validate() -> int:
         modified_functions=modified_functions,
         analysis=analysis,
         code_review_result=code_review_result,
+        reviewer_mentions=reviewer_mentions,
     )
     github.upsert_comment(pr, config.comments.marker, body)
     _apply_outcome_label(github, pr, config, config.labels.ready_for_review)
-    github.request_reviewers(pr, config)
     _enable_auto_merge(github, pr, config)
     github.set_status(pr, ValidationState.SUCCESS, "All checks passed. Ready for review.", config)
-    return 0
+    return ValidationResult(
+        state=ValidationState.SUCCESS,
+        reason="All checks passed. Ready for review.",
+        phase="summary",
+        outcome_label=config.labels.ready_for_review,
+        notify_users=reviewer_mentions,
+        files_changed=files,
+        new_functions=new_functions,
+        modified_functions=modified_functions,
+        test_result=test_result,
+        coverage_result=coverage,
+        analysis=analysis,
+    )
 
 
 def main() -> None:
     try:
-        raise SystemExit(validate())
+        result = validate()
+        raise SystemExit(0 if result.state == ValidationState.SUCCESS else 1)
     except GitHubError as exc:
         print(f"GitHub integration failed: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
