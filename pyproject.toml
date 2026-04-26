@@ -1,0 +1,47 @@
+[project]
+name = "pr-validation-agent"
+version = "0.1.0"
+description = "Production-ready PR validation with GitHub Actions and a LangGraph analysis service."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "httpx>=0.27.0",
+  "langchain>=1.0.0",
+  "langchain-openai>=0.3.0",
+  "langgraph>=1.0.0",
+  "pydantic>=2.8.0",
+  "pyyaml>=6.0.2",
+  "uvicorn[standard]>=0.30.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.6.0",
+]
+
+[project.scripts]
+pr-validation-ci = "pr_validation_agent.ci.runner:main"
+pr-validation-service = "pr_validation_agent.langgraph_service.app:main"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pr_validation_agent"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+  ".git",
+  ".ruff_cache",
+  ".uv-cache",
+  ".venv",
+  "__pycache__",
+]

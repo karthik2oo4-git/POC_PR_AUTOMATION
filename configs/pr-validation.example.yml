@@ -1,0 +1,78 @@
+version: 1
+
+status:
+  context: "intelligent-pr-validation"
+  target_url: ""
+
+tests:
+  command: "uv run pytest -q --maxfail=1"
+  timeout_seconds: 900
+  parallel_hint: "pytest-xdist is supported when the repository command includes -n auto"
+  log_max_bytes: 120000
+
+setup:
+  commands:
+    - "uv sync --frozen"
+  timeout_seconds: 600
+
+languages:
+  python:
+    enabled: true
+    include:
+      - "**/*.py"
+    exclude:
+      - "tests/**"
+      - "**/tests/**"
+      - "**/__pycache__/**"
+  javascript:
+    enabled: true
+    include:
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.ts"
+      - "**/*.tsx"
+    exclude:
+      - "node_modules/**"
+      - "dist/**"
+      - "build/**"
+
+test_detection:
+  test_file_patterns:
+    - "tests/**"
+    - "**/tests/**"
+    - "**/*_test.py"
+    - "**/test_*.py"
+    - "**/*.test.ts"
+    - "**/*.spec.ts"
+    - "**/*.test.js"
+    - "**/*.spec.js"
+  require_symbol_reference: true
+  allow_llm_coverage_review: true
+
+reviewers:
+  request_review_when_passed: true
+  fallback_reviewers: []
+  fallback_teams: []
+
+labels:
+  enabled: true
+  remove_stale: true
+  create_missing: true
+  test_failed: "test-failed"
+  needs_tests: "needs-tests"
+  ready_for_review: "ready-for-review"
+  merge_conflict: "merge-conflict"
+
+code_review:
+  enabled: false
+  command: ""
+  timeout_seconds: 600
+  log_max_bytes: 40000
+
+auto_merge:
+  enabled: false
+  method: "SQUASH"
+
+comments:
+  marker: "<!-- pr-validation-agent:summary -->"
+  max_log_lines: 120

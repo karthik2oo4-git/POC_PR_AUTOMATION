@@ -1,0 +1,48 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+  checks: read
+
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Intelligent PR Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout head branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.10.7"
+          enable-cache: true
+
+      - name: Install isolated Python
+        run: uv python install 3.11
+
+      - name: Sync isolated validation environment
+        run: uv sync --frozen
+
+      - name: Validate pull request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LANGGRAPH_SERVICE_URL: ${{ secrets.LANGGRAPH_SERVICE_URL }}
+          PR_VALIDATION_CONFIG: .github/pr-validation.yml
+        run: uv run pr-validation-ci
