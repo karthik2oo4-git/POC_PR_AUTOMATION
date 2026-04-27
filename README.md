@@ -1,36 +1,38 @@
 # PR Validation Agent
 
-A reusable GitHub pull request validation system focused on one job: run setup plus unit tests on pull requests and let GitHub branch protection decide whether merge is allowed.
+A reusable GitHub pull request validation system focused on one core job: run repository setup and unit tests on pull requests, then let GitHub branch protection decide whether merge is allowed.
 
-## What this project does
+## Overview
 
-This repository provides a portable PR validation flow that works across repositories and organizations:
+This project implements a GitHub-native PR validation flow that is portable across repositories and organizations.
 
-- a pull request is opened, synchronized, reopened, or marked ready for review
+Main behavior:
+
+- A pull request is opened, synchronized, reopened, or marked ready for review
 - GitHub Actions starts automatically
-- the workflow checks out the PR head commit
-- the validator merges the latest base branch into the PR branch inside CI
-- repository setup commands run
-- unit tests run
-- if setup or tests fail, the workflow fails and merge stays blocked
-- if setup and tests pass, the workflow succeeds and merge can be allowed by branch protection
+- The workflow checks out the PR head commit
+- The validator merges the latest base branch into the PR branch inside CI
+- Repository setup commands run
+- Unit tests run
+- If setup or tests fail, the workflow fails and merge stays blocked
+- If setup and tests pass, the workflow succeeds and merge can be allowed by branch protection
 
-This directly matches the two required flows:
+This directly supports the two required flows:
 
 1. PR raised -> GitHub workflow starts -> unit tests run -> all tests pass -> allow merge
 2. PR raised -> GitHub workflow starts -> unit tests run -> any test fails -> GitHub shows failed checks/logs and merge is blocked
 
-## Why this is enough
+## Why this approach works
 
-GitHub already provides the important native behavior needed for this use case:
+GitHub already provides the core merge-control features needed for this use case:
 
-- failed workflows show red status on the PR
-- required status checks block the merge button
+- Failed workflows show red status on the PR
+- Required status checks block the merge button
 - Actions logs show which step failed
-- rerunning happens automatically when new commits are pushed
-- branch protection makes the rule enforceable for teams and organizations
+- Reruns happen automatically when new commits are pushed
+- Branch protection makes the rule enforceable for teams and organizations
 
-Because of that, this project no longer depends on LLM-generated analysis for merge decisions.
+Because of that, the current solution does not depend on any LLM-based analysis for merge decisions.
 
 ## High-level architecture
 
@@ -62,7 +64,33 @@ If setup/tests pass:
    -> GitHub allows merge if branch protection requirements are satisfied
 ```
 
-## Core flow
+## Repository structure
+
+Top-level items:
+
+- [`.github`](.github) — GitHub Actions workflow definitions
+- [`configs`](configs/pr-validation.example.yml) — example validator configuration
+- [`src`](src/pr_validation_agent/__init__.py) — Python implementation
+- [`tests`](tests/test_comments.py) — unit tests
+- [`action.yml`](action.yml) — reusable composite GitHub Action
+- [`Dockerfile`](Dockerfile) — optional packaging container
+- [`pyproject.toml`](pyproject.toml) — project metadata, dependencies, scripts, and tooling config
+- [`uv.lock`](uv.lock) — dependency lock file
+- [`.gitignore`](.gitignore) — ignored local/generated files
+- [`.python-version`](.python-version) — Python version hint
+- [`README.md`](README.md) — consolidated project documentation
+
+Generated or local-only files that should not be committed include:
+
+- [`.venv/`](.gitignore:1)
+- [`.uv-cache/`](.gitignore:2)
+- [`__pycache__/`](.gitignore:3)
+- [`.pytest_cache/`](.gitignore:5)
+- [`.ruff_cache/`](.gitignore:6)
+- [`.pr-validation-test.log`](.gitignore:7)
+- [`.env`](.gitignore:8)
+
+## Workflow and execution flow
 
 ### 1. Workflow trigger
 
@@ -81,48 +109,49 @@ The workflow calls the composite action in [`action.yml`](action.yml).
 
 The action:
 
-- installs [`uv`](action.yml:22)
-- installs Python with [`uv python install`](action.yml:30)
-- syncs the validator environment with [`uv sync --frozen --no-dev`](action.yml:35)
-- runs the CLI entrypoint [`pr-validation-ci`](action.yml:40)
+- installs [`uv`](action.yml:19)
+- installs Python with [`uv python install`](action.yml:27)
+- syncs the validator environment with [`uv sync --frozen --no-dev`](action.yml:32)
+- runs the CLI entrypoint [`pr-validation-ci`](action.yml:37)
 
-### 3. PR context and GitHub status
+### 3. Main validation runner
 
-The validator entrypoint is [`validate()`](src/pr_validation_agent/ci/runner.py:157).
+The validator entrypoint is [`validate()`](src/pr_validation_agent/ci/runner.py:153).
 
 It:
 
-- loads config through [`AppConfig.load()`](src/pr_validation_agent/config.py:99)
-- loads PR event payload through [`_load_event()`](src/pr_validation_agent/ci/runner.py:19)
+- loads config through [`AppConfig.load()`](src/pr_validation_agent/config.py:73)
+- loads PR event payload through [`_load_event()`](src/pr_validation_agent/ci/runner.py:20)
 - builds a GitHub client through [`GitHubClient.from_env()`](src/pr_validation_agent/github.py:24)
 - reads PR metadata through [`load_pr_context_from_event()`](src/pr_validation_agent/github.py:45)
 - sets a pending commit status through [`set_status()`](src/pr_validation_agent/github.py:63)
 
 ### 4. Merge base branch into PR head in CI
 
-The key behavior is implemented in [`merge_base_into_head()`](src/pr_validation_agent/ci/runner.py:83).
+The key merge behavior is implemented in [`merge_base_into_head()`](src/pr_validation_agent/ci/runner.py:114).
 
-It runs:
+It runs git commands to:
 
-- [`git fetch origin <base_ref>`](src/pr_validation_agent/ci/runner.py:89)
-- [`git merge --no-edit --no-ff origin/<base_ref>`](src/pr_validation_agent/ci/runner.py:90)
+- configure the Git identity
+- fetch the latest base branch from origin
+- merge the base branch into the checked-out PR head
 
-This ensures the tests run against the PR branch in merged CI state, not in isolation.
+This ensures tests run against the merged CI state that matters to reviewers.
 
-If that merge fails:
+If the merge fails:
 
-- [`render_merge_conflict_comment()`](src/pr_validation_agent/comments.py:38) creates the PR comment
+- [`render_merge_conflict_comment()`](src/pr_validation_agent/comments.py:74) creates the PR comment
 - [`upsert_comment()`](src/pr_validation_agent/github.py:81) updates a single managed bot comment
 - [`apply_outcome_label()`](src/pr_validation_agent/github.py:157) applies the merge-conflict label
-- [`set_status()`](src/pr_validation_agent/github.py:63) marks the validation as failed
+- [`set_status()`](src/pr_validation_agent/github.py:63) marks validation as failed
 
 ### 5. Setup and unit tests
 
-Repository setup commands run through [`run_setup()`](src/pr_validation_agent/ci/runner.py:66).
+Repository setup commands run through [`run_setup()`](src/pr_validation_agent/ci/runner.py:67).
 
-Unit tests run through [`run_tests()`](src/pr_validation_agent/ci/runner.py:34).
+Unit tests run through [`run_tests()`](src/pr_validation_agent/ci/runner.py:35).
 
-Both return a [`TestRunResult`](src/pr_validation_agent/models.py:38) containing:
+Both return a [`TestRunResult`](src/pr_validation_agent/models.py:16) that contains:
 
 - command
 - exit code
@@ -136,13 +165,13 @@ Both return a [`TestRunResult`](src/pr_validation_agent/models.py:38) containing
 
 If setup fails or tests fail:
 
-- [`render_test_failure_comment()`](src/pr_validation_agent/comments.py:13) updates one PR comment
+- [`render_test_failure_comment()`](src/pr_validation_agent/comments.py:26) updates one PR comment
 - the author is mentioned
 - the `test-failed` label can be applied
 - commit status becomes `failure`
 - GitHub branch protection keeps merge blocked
 
-The failure comment intentionally points developers to GitHub-native tools:
+The failure comment points developers to GitHub-native troubleshooting:
 
 - PR Checks tab
 - failed workflow run
@@ -153,24 +182,97 @@ The failure comment intentionally points developers to GitHub-native tools:
 
 If merge succeeds, setup succeeds, and tests pass:
 
-- [`render_success_comment()`](src/pr_validation_agent/comments.py:54) posts a success message
+- [`render_success_comment()`](src/pr_validation_agent/comments.py:99) posts a success message
 - the `ready-for-review` label can be applied
 - commit status becomes `success`
 
-Once this check is configured as a required status check in branch protection, GitHub can enable merge.
+Once the check is configured as a required status check in branch protection, GitHub can enable merge.
 
-## What GitHub provides for failed unit tests
+## Source code structure
 
-When unit tests fail, GitHub already gives several useful options:
+The main source package is [`src/pr_validation_agent`](src/pr_validation_agent/__init__.py).
 
-- failed status on the PR
-- merge button blocked when the check is required
-- detailed Actions logs
-- per-step failure visibility
-- workflow re-run support
-- commit-by-commit history of validation outcomes
+Primary source files:
 
-This is the recommended handling model for this project.
+- [`src/pr_validation_agent/models.py`](src/pr_validation_agent/models.py)
+- [`src/pr_validation_agent/config.py`](src/pr_validation_agent/config.py)
+- [`src/pr_validation_agent/comments.py`](src/pr_validation_agent/comments.py)
+- [`src/pr_validation_agent/github.py`](src/pr_validation_agent/github.py)
+- [`src/pr_validation_agent/ci/runner.py`](src/pr_validation_agent/ci/runner.py)
+
+### Shared models
+
+[`src/pr_validation_agent/models.py`](src/pr_validation_agent/models.py) contains the shared models used by the validator.
+
+Important models:
+
+- [`ValidationState`](src/pr_validation_agent/models.py:9) — commit status values sent to GitHub
+- [`TestRunResult`](src/pr_validation_agent/models.py:16) — result of a setup or test command
+- [`PullRequestContext`](src/pr_validation_agent/models.py:26) — PR metadata extracted from the event payload
+- [`ValidationResult`](src/pr_validation_agent/models.py:41) — final result returned by the validator
+
+### Configuration schema
+
+[`src/pr_validation_agent/config.py`](src/pr_validation_agent/config.py) defines the YAML configuration schema.
+
+Important config classes:
+
+- [`StatusConfig`](src/pr_validation_agent/config.py:11) — commit status context name and optional target URL
+- [`TestsConfig`](src/pr_validation_agent/config.py:16) — test command and timeout behavior
+- [`SetupConfig`](src/pr_validation_agent/config.py:23) — setup commands run before tests
+- [`ReviewersConfig`](src/pr_validation_agent/config.py:28) — optional reviewer request settings
+- [`LabelsConfig`](src/pr_validation_agent/config.py:34) — optional outcome labels
+- [`AutoMergeConfig`](src/pr_validation_agent/config.py:56) — optional auto-merge settings
+- [`CommentsConfig`](src/pr_validation_agent/config.py:61) — PR comment marker and comment settings
+- [`AppConfig.load()`](src/pr_validation_agent/config.py:73) — load YAML from disk and validate it
+
+### Comment rendering
+
+[`src/pr_validation_agent/comments.py`](src/pr_validation_agent/comments.py) renders the managed PR comments.
+
+Important functions:
+
+- [`_format_log_excerpt()`](src/pr_validation_agent/comments.py:6) — builds a small log excerpt from captured output
+- [`render_test_failure_comment()`](src/pr_validation_agent/comments.py:26) — comment for setup or test failure
+- [`render_merge_conflict_comment()`](src/pr_validation_agent/comments.py:74) — comment for merge conflicts
+- [`render_success_comment()`](src/pr_validation_agent/comments.py:99) — comment for successful validation
+
+### GitHub API integration
+
+[`src/pr_validation_agent/github.py`](src/pr_validation_agent/github.py) wraps GitHub API interactions.
+
+Important methods in [`GitHubClient`](src/pr_validation_agent/github.py:19):
+
+- [`from_env()`](src/pr_validation_agent/github.py:24) — loads `GITHUB_TOKEN`
+- [`load_pr_context_from_event()`](src/pr_validation_agent/github.py:45) — builds [`PullRequestContext`](src/pr_validation_agent/models.py:26)
+- [`set_status()`](src/pr_validation_agent/github.py:63) — posts commit status for the PR head SHA
+- [`upsert_comment()`](src/pr_validation_agent/github.py:81) — maintains a single managed bot comment
+- [`request_reviewers()`](src/pr_validation_agent/github.py:107) — optional reviewer handling
+- [`ensure_label()`](src/pr_validation_agent/github.py:122) — creates labels if needed
+- [`add_labels()`](src/pr_validation_agent/github.py:134) — applies labels
+- [`remove_label()`](src/pr_validation_agent/github.py:144) — removes labels
+- [`apply_outcome_label()`](src/pr_validation_agent/github.py:157) — manages outcome label transitions
+- [`enable_auto_merge()`](src/pr_validation_agent/github.py:168) — optional helper for auto-merge
+
+### Runner orchestration
+
+[`src/pr_validation_agent/ci/runner.py`](src/pr_validation_agent/ci/runner.py) is the main orchestration engine.
+
+Important functions:
+
+- [`_load_event()`](src/pr_validation_agent/ci/runner.py:20) — reads the GitHub event payload
+- [`_truncate_log()`](src/pr_validation_agent/ci/runner.py:27) — trims large captured output
+- [`run_tests()`](src/pr_validation_agent/ci/runner.py:35) — runs the configured unit-test command
+- [`run_setup()`](src/pr_validation_agent/ci/runner.py:67) — runs configured setup commands
+- [`merge_base_into_head()`](src/pr_validation_agent/ci/runner.py:114) — merges base into PR head in CI
+- [`validate()`](src/pr_validation_agent/ci/runner.py:153) — full validation flow
+
+Current behavior is intentionally simple:
+
+- merge conflict -> fail
+- setup failure -> fail
+- unit test failure -> fail
+- all checks pass -> success
 
 ## Configuration
 
@@ -182,21 +284,8 @@ Main settings:
 - [`tests.command`](configs/pr-validation.example.yml:8) defines the unit-test command
 - [`tests.timeout_seconds`](configs/pr-validation.example.yml:9) controls test timeout
 - [`setup.commands`](configs/pr-validation.example.yml:14) defines repository setup commands
-- [`labels.*`](configs/pr-validation.example.yml:24) controls optional PR labels
-- [`comments.marker`](configs/pr-validation.example.yml:43) controls the maintained PR comment marker
-
-## Repository structure
-
-Key files:
-
-- [`action.yml`](action.yml) — reusable composite GitHub Action
-- [`.github/workflows/pr-validation.yml`](.github/workflows/pr-validation.yml) — example PR workflow
-- [`configs/pr-validation.example.yml`](configs/pr-validation.example.yml) — example repository config
-- [`src/pr_validation_agent/ci/runner.py`](src/pr_validation_agent/ci/runner.py) — main validation orchestration
-- [`src/pr_validation_agent/github.py`](src/pr_validation_agent/github.py) — GitHub API integration
-- [`src/pr_validation_agent/comments.py`](src/pr_validation_agent/comments.py) — PR comment rendering
-- [`src/pr_validation_agent/config.py`](src/pr_validation_agent/config.py) — YAML config schema
-- [`src/pr_validation_agent/models.py`](src/pr_validation_agent/models.py) — shared models
+- [`labels.*`](configs/pr-validation.example.yml:23) controls optional PR labels
+- [`comments.marker`](configs/pr-validation.example.yml:37) controls the maintained PR comment marker
 
 ## Branch protection setup
 
@@ -212,11 +301,32 @@ Once that is done:
 - red check -> merge blocked
 - green check -> merge allowed, subject to your approval rules
 
+## Testing
+
+The remaining unit tests are under [`tests`](tests/test_comments.py).
+
+The current validation command used locally is:
+
+- [`uv run pytest ./tests`](pyproject.toml:23)
+
+## Unwanted files removed
+
+The repository cleanup removed redundant or unwanted items such as:
+
+- [`REPO_STRUCTURE_README.md`](REPO_STRUCTURE_README.md)
+- [`SRC_README.md`](SRC_README.md)
+- [`.DS_Store`](.gitignore)
+- [`.env`](.env)
+
+The local [`.env`](.env) file previously contained secrets and should not be kept in the repository. The ignore rule in [`.gitignore`](.gitignore:8) already prevents future commits of that file.
+
 ## Summary
 
-This project is now centered on GitHub-native PR gating:
+This repository is now focused on a clean GitHub-native PR validation model:
 
-- merge decisions come from setup/test pass or fail
-- GitHub branch protection is the enforcement layer
-- no LLM output is required for merge control
-- the design stays reusable across teams and organizations
+- GitHub workflow starts on PR activity
+- latest base branch is merged into the PR in CI
+- setup and tests run
+- GitHub status becomes green or red
+- branch protection decides merge availability
+- documentation is consolidated into a single [`README.md`](README.md)
