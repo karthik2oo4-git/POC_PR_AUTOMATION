@@ -31,12 +31,6 @@ class LanguageConfig(BaseModel):
     exclude: list[str] = Field(default_factory=list)
 
 
-class TestDetectionConfig(BaseModel):
-    test_file_patterns: list[str] = Field(default_factory=list)
-    require_symbol_reference: bool = True
-    allow_llm_coverage_review: bool = True
-
-
 class ReviewersConfig(BaseModel):
     request_review_when_passed: bool = True
     fallback_reviewers: list[str] = Field(default_factory=list)
@@ -48,7 +42,6 @@ class LabelsConfig(BaseModel):
     remove_stale: bool = True
     create_missing: bool = True
     test_failed: str = "test-failed"
-    needs_tests: str = "needs-tests"
     ready_for_review: str = "ready-for-review"
     merge_conflict: str = "merge-conflict"
 
@@ -57,7 +50,6 @@ class LabelsConfig(BaseModel):
             label
             for label in [
                 self.test_failed,
-                self.needs_tests,
                 self.ready_for_review,
                 self.merge_conflict,
             ]
@@ -68,13 +60,6 @@ class LabelsConfig(BaseModel):
 class AutoMergeConfig(BaseModel):
     enabled: bool = False
     method: Literal["MERGE", "SQUASH", "REBASE"] = "SQUASH"
-
-
-class CodeReviewConfig(BaseModel):
-    enabled: bool = False
-    command: str = ""
-    timeout_seconds: int = 600
-    log_max_bytes: int = 40_000
 
 
 class CommentsConfig(BaseModel):
@@ -88,10 +73,8 @@ class AppConfig(BaseModel):
     setup: SetupConfig = Field(default_factory=SetupConfig)
     tests: TestsConfig = Field(default_factory=TestsConfig)
     languages: dict[str, LanguageConfig] = Field(default_factory=dict)
-    test_detection: TestDetectionConfig = Field(default_factory=TestDetectionConfig)
     reviewers: ReviewersConfig = Field(default_factory=ReviewersConfig)
     labels: LabelsConfig = Field(default_factory=LabelsConfig)
-    code_review: CodeReviewConfig = Field(default_factory=CodeReviewConfig)
     auto_merge: AutoMergeConfig = Field(default_factory=AutoMergeConfig)
     comments: CommentsConfig = Field(default_factory=CommentsConfig)
 

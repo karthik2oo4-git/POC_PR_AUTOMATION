@@ -1,13 +1,10 @@
 name: "PR Validation Agent"
-description: "Validate PRs with tests, AST-based new-function detection, and LangGraph feedback."
+description: "Validate pull requests with GitHub-native setup and unit-test gating."
 inputs:
   config-path:
     description: "Path to repository validation config."
     required: false
     default: ".github/pr-validation.yml"
-  langgraph-url:
-    description: "Base URL of the LangGraph service."
-    required: true
   python-version:
     description: "Python version used by the validation runner."
     required: false
@@ -37,5 +34,4 @@ runs:
       shell: bash
       env:
         PR_VALIDATION_CONFIG: ${{ inputs.config-path }}
-        LANGGRAPH_SERVICE_URL: ${{ inputs.langgraph-url }}
       run: "$GITHUB_ACTION_PATH/.venv/bin/pr-validation-ci"

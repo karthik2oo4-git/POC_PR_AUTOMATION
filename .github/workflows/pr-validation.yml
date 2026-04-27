@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Intelligent PR Validation
+    name: PR Unit Test Validation
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -32,9 +32,7 @@ jobs:
         uses: ./
         with:
           config-path: .github/pr-validation.yml
-          langgraph-url: ${{ secrets.LANGGRAPH_SERVICE_URL }}
           python-version: "3.11"
           uv-version: "0.10.7"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LANGGRAPH_SERVICE_TOKEN: ${{ secrets.LANGGRAPH_SERVICE_TOKEN }}
