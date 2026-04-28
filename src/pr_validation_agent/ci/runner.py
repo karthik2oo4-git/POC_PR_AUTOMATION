@@ -111,6 +111,54 @@ def run_setup(config: AppConfig, cwd: Path) -> TestRunResult | None:
     )
 
 
+def copy_tests_from_base(cwd: Path, pr: PullRequestContext, config: AppConfig) -> tuple[bool, str]:
+    """Copy test files from base branch to ensure tests can't be tampered with in PR."""
+    if os.getenv("PR_VALIDATION_SKIP_TEST_COPY", "").lower() in {"1", "true", "yes"}:
+        return True, "Test copy skipped by PR_VALIDATION_SKIP_TEST_COPY."
+    
+    # Determine test directory from config
+    test_command = config.tests.command
+    # Extract test path from command (e.g., "pytest tests/" -> "tests/")
+    test_paths = []
+    if "pytest" in test_command:
+        parts = test_command.split()
+        for part in parts:
+            if not part.startswith("-") and part not in ["pytest", "uv", "run"]:
+                test_paths.append(part)
+    
+    # Default to common test directories if not found
+    if not test_paths:
+        test_paths = ["tests/", "test/"]
+    
+    commands = [
+        ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
+        ["git", "config", "user.name", "github-actions[bot]"],
+        ["git", "fetch", "origin", pr.base_ref],
+    ]
+    
+    output: list[str] = []
+    for command in commands:
+        result = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True)
+        output.append(f"$ {' '.join(command)}")
+        output.append(result.stdout)
+        output.append(result.stderr)
+        if result.returncode != 0:
+            return False, "\n".join(output)
+    
+    # Copy test files from base branch
+    for test_path in test_paths:
+        test_path_clean = test_path.rstrip("/")
+        checkout_cmd = ["git", "checkout", f"origin/{pr.base_ref}", "--", test_path_clean]
+        result = subprocess.run(checkout_cmd, cwd=cwd, check=False, capture_output=True, text=True)
+        output.append(f"$ {' '.join(checkout_cmd)}")
+        output.append(result.stdout)
+        output.append(result.stderr)
+        # Don't fail if test path doesn't exist in base, just log it
+        if result.returncode == 0:
+            output.append(f"✓ Copied tests from base branch: {test_path_clean}")
+    
+    return True, "\n".join(output)
+
 def merge_base_into_head(cwd: Path, pr: PullRequestContext) -> tuple[bool, str]:
     if os.getenv("PR_VALIDATION_SKIP_MERGE", "").lower() in {"1", "true", "yes"}:
         return True, "Merge skipped by PR_VALIDATION_SKIP_MERGE."
@@ -158,7 +206,29 @@ def validate() -> ValidationResult:
 
     github.set_status(pr, ValidationState.PENDING, "PR validation started", config)
 
-    # Run setup and tests on PR branch first (before merge)
+    # Copy test files from base branch to prevent tampering
+    test_copied, copy_log = copy_tests_from_base(cwd, pr, config)
+    if not test_copied:
+        body = f"""{config.comments.marker}
+@{pr.author} ⚠️ Failed to copy test files from base branch
+
+Could not retrieve test files from `{pr.base_ref}` branch. This is required to ensure test integrity.
+
+Details:
+```text
+{copy_log}
+```
+"""
+        github.upsert_comment(pr, config.comments.marker, body)
+        github.set_status(pr, ValidationState.ERROR, "Failed to copy test files", config)
+        return ValidationResult(
+            state=ValidationState.ERROR,
+            reason="Failed to copy test files from base branch",
+            phase="setup",
+            notify_users=[f"@{pr.author}"],
+        )
+
+    # Run setup and tests on PR branch (with base branch tests)
     setup_result = run_setup(config, cwd)
     if setup_result is not None and not setup_result.passed:
         body = render_test_failure_comment(
