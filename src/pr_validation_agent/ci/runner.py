@@ -158,25 +158,7 @@ def validate() -> ValidationResult:
 
     github.set_status(pr, ValidationState.PENDING, "PR validation started", config)
 
-    merged, merge_log = merge_base_into_head(cwd, pr)
-    if not merged:
-        body = render_merge_conflict_comment(
-            marker=config.comments.marker,
-            author=pr.author,
-            base_ref=pr.base_ref,
-            merge_log=merge_log,
-        )
-        github.upsert_comment(pr, config.comments.marker, body)
-        _apply_outcome_label(github, pr, config, config.labels.merge_conflict)
-        github.set_status(pr, ValidationState.FAILURE, "Base branch merge failed", config)
-        return ValidationResult(
-            state=ValidationState.FAILURE,
-            reason="Base branch merge failed",
-            phase="merge",
-            outcome_label=config.labels.merge_conflict,
-            notify_users=[f"@{pr.author}"],
-        )
-
+    # Run setup and tests on PR branch first (before merge)
     setup_result = run_setup(config, cwd)
     if setup_result is not None and not setup_result.passed:
         body = render_test_failure_comment(
@@ -215,6 +197,26 @@ def validate() -> ValidationResult:
             outcome_label=config.labels.test_failed,
             notify_users=[f"@{pr.author}"],
             test_result=test_result,
+        )
+
+    # Only merge base branch after tests pass
+    merged, merge_log = merge_base_into_head(cwd, pr)
+    if not merged:
+        body = render_merge_conflict_comment(
+            marker=config.comments.marker,
+            author=pr.author,
+            base_ref=pr.base_ref,
+            merge_log=merge_log,
+        )
+        github.upsert_comment(pr, config.comments.marker, body)
+        _apply_outcome_label(github, pr, config, config.labels.merge_conflict)
+        github.set_status(pr, ValidationState.FAILURE, "Base branch merge failed", config)
+        return ValidationResult(
+            state=ValidationState.FAILURE,
+            reason="Base branch merge failed",
+            phase="merge",
+            outcome_label=config.labels.merge_conflict,
+            notify_users=[f"@{pr.author}"],
         )
 
     body = render_success_comment(marker=config.comments.marker)
