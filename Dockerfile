@@ -13,5 +13,4 @@ COPY src ./src
 
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8080
-CMD ["uvicorn", "pr_validation_agent.langgraph_service.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["pr-validation-ci"]
