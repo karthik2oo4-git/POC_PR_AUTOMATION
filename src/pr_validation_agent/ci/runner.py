@@ -145,6 +145,13 @@ def copy_tests_from_base(cwd: Path, pr: PullRequestContext, config: AppConfig) -
         if result.returncode != 0:
             return False, "\n".join(output)
     
+    # Save current HEAD to restore later
+    save_head_cmd = ["git", "rev-parse", "HEAD"]
+    result = subprocess.run(save_head_cmd, cwd=cwd, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        return False, "\n".join(output)
+    current_head = result.stdout.strip()
+    
     # Copy test files from base branch
     for test_path in test_paths:
         test_path_clean = test_path.rstrip("/")
@@ -156,6 +163,14 @@ def copy_tests_from_base(cwd: Path, pr: PullRequestContext, config: AppConfig) -
         # Don't fail if test path doesn't exist in base, just log it
         if result.returncode == 0:
             output.append(f"✓ Copied tests from base branch: {test_path_clean}")
+    
+    # Reset git index to avoid interfering with merge conflict detection
+    # Keep the test files in working directory but unstage them
+    reset_cmd = ["git", "reset", "HEAD"]
+    result = subprocess.run(reset_cmd, cwd=cwd, check=False, capture_output=True, text=True)
+    output.append(f"$ {' '.join(reset_cmd)}")
+    output.append(result.stdout)
+    output.append(result.stderr)
     
     return True, "\n".join(output)
 
