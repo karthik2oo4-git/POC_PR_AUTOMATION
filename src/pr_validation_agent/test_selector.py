@@ -252,8 +252,22 @@ class TestSelector:
                         print(f"  Git output: {result.stderr}", file=sys.stderr)
                     
                     if source_file.exists():
+                        # Debug: Show first few lines of the file being copied
+                        try:
+                            with open(source_file, 'r') as f:
+                                lines = f.readlines()[:5]
+                                print(f"  DEBUG: First 5 lines of {file_path}:", file=sys.stderr)
+                                for i, line in enumerate(lines, 1):
+                                    print(f"    {i}: {line.rstrip()}", file=sys.stderr)
+                        except Exception:
+                            pass
+                        
                         shutil.copy2(source_file, dest_file)
                         print(f"  ✓ Copied base version of {file_path}", file=sys.stderr)
+                        
+                        # Debug: Verify the copied file
+                        if dest_file.exists():
+                            print(f"  ✓ Verified: {dest_file} exists", file=sys.stderr)
                     else:
                         print(f"  Warning: Base file {file_path} does not exist after checkout", file=sys.stderr)
                 finally:

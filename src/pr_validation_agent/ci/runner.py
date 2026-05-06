@@ -89,6 +89,15 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
     else:
         test_command = config.tests.command
     
+    # Debug: Print the actual command being executed
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"EXECUTING TEST COMMAND:", file=sys.stderr)
+    print(f"Command: {test_command}", file=sys.stderr)
+    print(f"Working directory: {cwd}", file=sys.stderr)
+    if test_dir:
+        print(f"Test directory: {test_dir}", file=sys.stderr)
+    print(f"{'='*60}\n", file=sys.stderr)
+    
     try:
         result = subprocess.run(
             test_command,
@@ -101,6 +110,13 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
         )
         exit_code = result.returncode
         stdout, stderr = _truncate_log(result.stdout, result.stderr, config.tests.log_max_bytes)
+        
+        # Debug: Print test results
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"TEST RESULTS:", file=sys.stderr)
+        print(f"Exit code: {exit_code}", file=sys.stderr)
+        print(f"Passed: {exit_code == 0}", file=sys.stderr)
+        print(f"{'='*60}\n", file=sys.stderr)
     except subprocess.TimeoutExpired as exc:
         exit_code = 124
         stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
