@@ -86,15 +86,20 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
         
         abs_test_dir = test_dir.resolve()
         
-        # Extract base pytest command (remove any existing paths)
+        # Extract base pytest command (remove any existing test directory paths)
         base_command = config.tests.command
-        # Remove common test paths from command
-        for pattern in ["tests/", "test/", "tests", "test"]:
-            base_command = base_command.replace(pattern, "").strip()
+        
+        # Remove test directory paths from command by filtering out path-like arguments
+        parts = base_command.split()
+        filtered_parts = []
+        for part in parts:
+            # Keep the part if it's not a test directory path
+            if not (part.endswith('/') or part in ['tests', 'test', 'tests/', 'test/']):
+                filtered_parts.append(part)
+        base_command = " ".join(filtered_parts)
         
         # Build isolated test command
         # --rootdir: Sets pytest's root directory (prevents discovery outside test_dir)
-        # -v: Verbose output to see which tests are actually running
         # The test directory path must come AFTER pytest command but BEFORE other flags
         if "pytest" in base_command:
             # Insert test directory and rootdir right after pytest command
@@ -102,7 +107,7 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
             pytest_idx = next(i for i, p in enumerate(parts) if "pytest" in p)
             # Reconstruct: [before pytest] pytest [test_dir] --rootdir=[test_dir] [other flags]
             test_command = " ".join(parts[:pytest_idx+1]) + \
-                          f" {abs_test_dir} --rootdir={abs_test_dir} -v " + \
+                          f" {abs_test_dir} --rootdir={abs_test_dir} " + \
                           " ".join(parts[pytest_idx+1:])
         else:
             # Non-pytest command, just append directory
