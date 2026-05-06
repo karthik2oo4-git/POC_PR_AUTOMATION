@@ -76,12 +76,16 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
     
     # Build test command
     if test_dir:
-        # Run tests from custom directory
+        # Run tests ONLY from custom directory, disable auto-discovery
         test_command = config.tests.command.replace("tests/", str(test_dir) + "/")
         test_command = test_command.replace("test/", str(test_dir) + "/")
-        # If no path in command, append the test directory
+        # If no path in command, append the test directory and disable discovery
         if "tests" not in test_command and "test" not in test_command:
-            test_command = f"{test_command} {test_dir}"
+            # For pytest: explicitly specify directory and disable auto-discovery from cwd
+            if "pytest" in test_command:
+                test_command = f"{test_command} {test_dir} --ignore=tests --ignore=test"
+            else:
+                test_command = f"{test_command} {test_dir}"
     else:
         test_command = config.tests.command
     
