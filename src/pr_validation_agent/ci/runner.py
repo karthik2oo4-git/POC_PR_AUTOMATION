@@ -264,7 +264,7 @@ Error: {exc}
     # Step 5: Prepare test environment with correct test files
     print("\nPreparing test environment...", file=sys.stderr)
     try:
-        test_dir = test_selector.prepare_test_environment(pr.base_ref, final_tests)
+        test_dir = test_selector.prepare_test_environment(pr.base_ref, final_tests, base_tests)
         print(f"Test directory prepared: {test_dir}", file=sys.stderr)
     except Exception as exc:
         body = f"""{config.comments.marker}

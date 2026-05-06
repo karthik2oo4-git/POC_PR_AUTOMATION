@@ -193,7 +193,8 @@ class TestSelector:
     def prepare_test_environment(
         self,
         base_ref: str,
-        final_tests: Set[TestIdentifier]
+        final_tests: Set[TestIdentifier],
+        base_tests: Set[TestIdentifier]
     ) -> Path:
         """
         Prepare a test directory with the correct test files.
@@ -206,11 +207,13 @@ class TestSelector:
         Args:
             base_ref: Base branch reference
             final_tests: Final set of tests to run
+            base_tests: Set of base branch tests (for efficiency)
         
         Returns:
             Path to the prepared test directory
         """
         import shutil
+        import sys
         import tempfile
         
         # Create temporary directory
@@ -223,13 +226,11 @@ class TestSelector:
                 tests_by_file[test.file_path] = []
             tests_by_file[test.file_path].append(test.test_name)
         
-        # Determine which files come from base vs PR
-        base_tests_set = self.get_base_tests(base_ref)
-        
+        # Process each test file
         for file_path, test_names in tests_by_file.items():
             # Check if any test in this file is from base
             has_base_test = any(
-                TestIdentifier(file_path, name) in base_tests_set
+                TestIdentifier(file_path, name) in base_tests
                 for name in test_names
             )
             
@@ -241,17 +242,31 @@ class TestSelector:
             
             if has_base_test:
                 # Use base version of the file
+                print(f"  Using BASE version: {file_path}", file=sys.stderr)
                 current_head = self._get_current_head()
                 try:
-                    self._run_git(["checkout", f"origin/{base_ref}", "--", file_path])
+                    # Checkout base version
+                    result = self._run_git(["checkout", f"origin/{base_ref}", "--", file_path])
+                    if result.returncode != 0:
+                        print(f"  Warning: Could not checkout base version of {file_path}", file=sys.stderr)
+                        print(f"  Git output: {result.stderr}", file=sys.stderr)
+                    
                     if source_file.exists():
                         shutil.copy2(source_file, dest_file)
+                        print(f"  ✓ Copied base version of {file_path}", file=sys.stderr)
+                    else:
+                        print(f"  Warning: Base file {file_path} does not exist after checkout", file=sys.stderr)
                 finally:
+                    # Restore PR version in working directory
                     self._run_git(["checkout", current_head, "--", file_path])
             else:
                 # Use PR version (new test file)
+                print(f"  Using PR version: {file_path} (new test file)", file=sys.stderr)
                 if source_file.exists():
                     shutil.copy2(source_file, dest_file)
+                    print(f"  ✓ Copied PR version of {file_path}", file=sys.stderr)
+                else:
+                    print(f"  Warning: PR file {file_path} does not exist", file=sys.stderr)
         
         return temp_dir
     
