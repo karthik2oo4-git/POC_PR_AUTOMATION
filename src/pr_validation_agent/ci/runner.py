@@ -15,6 +15,7 @@ from pr_validation_agent.comments import (
 from pr_validation_agent.config import AppConfig
 from pr_validation_agent.github import GitHubClient, GitHubError
 from pr_validation_agent.models import PullRequestContext, TestRunResult, ValidationResult, ValidationState
+from pr_validation_agent.test_selector import TestSelector
 
 
 def _load_event() -> dict:
@@ -32,11 +33,61 @@ def _truncate_log(stdout: str, stderr: str, max_bytes: int) -> tuple[str, str]:
     return truncated, ""
 
 
-def run_tests(config: AppConfig, cwd: Path) -> TestRunResult:
+def _extract_test_paths(test_command: str) -> list[str]:
+    """
+    Extract test directory paths from test command.
+    
+    Args:
+        test_command: Test command string (e.g., "pytest tests/")
+    
+    Returns:
+        List of test directory paths
+    """
+    test_paths = []
+    
+    # Extract paths from command
+    if "pytest" in test_command:
+        parts = test_command.split()
+        for part in parts:
+            if not part.startswith("-") and part not in ["pytest", "uv", "run", "-q", "--maxfail=1"]:
+                if "/" in part or part in ["tests", "test"]:
+                    test_paths.append(part if part.endswith("/") else part + "/")
+    
+    # Default to common test directories if not found
+    if not test_paths:
+        test_paths = ["tests/", "test/"]
+    
+    return test_paths
+
+
+def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> TestRunResult:
+    """
+    Run tests with optional custom test directory.
+    
+    Args:
+        config: Application configuration
+        cwd: Current working directory
+        test_dir: Optional custom test directory (for test selection)
+    
+    Returns:
+        TestRunResult with execution details
+    """
     started = time.monotonic()
+    
+    # Build test command
+    if test_dir:
+        # Run tests from custom directory
+        test_command = config.tests.command.replace("tests/", str(test_dir) + "/")
+        test_command = test_command.replace("test/", str(test_dir) + "/")
+        # If no path in command, append the test directory
+        if "tests" not in test_command and "test" not in test_command:
+            test_command = f"{test_command} {test_dir}"
+    else:
+        test_command = config.tests.command
+    
     try:
         result = subprocess.run(
-            config.tests.command,
+            test_command,
             cwd=cwd,
             shell=True,
             check=False,
@@ -111,69 +162,6 @@ def run_setup(config: AppConfig, cwd: Path) -> TestRunResult | None:
     )
 
 
-def copy_tests_from_base(cwd: Path, pr: PullRequestContext, config: AppConfig) -> tuple[bool, str]:
-    """Copy test files from base branch to ensure tests can't be tampered with in PR."""
-    if os.getenv("PR_VALIDATION_SKIP_TEST_COPY", "").lower() in {"1", "true", "yes"}:
-        return True, "Test copy skipped by PR_VALIDATION_SKIP_TEST_COPY."
-    
-    # Determine test directory from config
-    test_command = config.tests.command
-    # Extract test path from command (e.g., "pytest tests/" -> "tests/")
-    test_paths = []
-    if "pytest" in test_command:
-        parts = test_command.split()
-        for part in parts:
-            if not part.startswith("-") and part not in ["pytest", "uv", "run"]:
-                test_paths.append(part)
-    
-    # Default to common test directories if not found
-    if not test_paths:
-        test_paths = ["tests/", "test/"]
-    
-    commands = [
-        ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
-        ["git", "config", "user.name", "github-actions[bot]"],
-        ["git", "fetch", "origin", pr.base_ref],
-    ]
-    
-    output: list[str] = []
-    for command in commands:
-        result = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True)
-        output.append(f"$ {' '.join(command)}")
-        output.append(result.stdout)
-        output.append(result.stderr)
-        if result.returncode != 0:
-            return False, "\n".join(output)
-    
-    # Save current HEAD to restore later
-    save_head_cmd = ["git", "rev-parse", "HEAD"]
-    result = subprocess.run(save_head_cmd, cwd=cwd, check=False, capture_output=True, text=True)
-    if result.returncode != 0:
-        return False, "\n".join(output)
-    current_head = result.stdout.strip()
-    
-    # Copy test files from base branch
-    for test_path in test_paths:
-        test_path_clean = test_path.rstrip("/")
-        checkout_cmd = ["git", "checkout", f"origin/{pr.base_ref}", "--", test_path_clean]
-        result = subprocess.run(checkout_cmd, cwd=cwd, check=False, capture_output=True, text=True)
-        output.append(f"$ {' '.join(checkout_cmd)}")
-        output.append(result.stdout)
-        output.append(result.stderr)
-        # Don't fail if test path doesn't exist in base, just log it
-        if result.returncode == 0:
-            output.append(f"✓ Copied tests from base branch: {test_path_clean}")
-    
-    # Reset git index to avoid interfering with merge conflict detection
-    # Keep the test files in working directory but unstage them
-    reset_cmd = ["git", "reset", "HEAD"]
-    result = subprocess.run(reset_cmd, cwd=cwd, check=False, capture_output=True, text=True)
-    output.append(f"$ {' '.join(reset_cmd)}")
-    output.append(result.stdout)
-    output.append(result.stderr)
-    
-    return True, "\n".join(output)
-
 def merge_base_into_head(cwd: Path, pr: PullRequestContext) -> tuple[bool, str]:
     if os.getenv("PR_VALIDATION_SKIP_MERGE", "").lower() in {"1", "true", "yes"}:
         return True, "Merge skipped by PR_VALIDATION_SKIP_MERGE."
@@ -221,29 +209,81 @@ def validate() -> ValidationResult:
 
     github.set_status(pr, ValidationState.PENDING, "PR validation started", config)
 
-    # Copy test files from base branch to prevent tampering
-    test_copied, copy_log = copy_tests_from_base(cwd, pr, config)
-    if not test_copied:
+    # Determine test paths from config
+    test_paths = _extract_test_paths(config.tests.command)
+    
+    # Initialize test selector with intelligent test selection
+    test_selector = TestSelector(cwd, test_paths)
+    
+    # Step 1: Get base branch tests (set A)
+    print("Discovering tests from base branch...", file=sys.stderr)
+    try:
+        base_tests = test_selector.get_base_tests(pr.base_ref)
+        print(f"Found {len(base_tests)} tests in base branch", file=sys.stderr)
+    except Exception as exc:
         body = f"""{config.comments.marker}
-@{pr.author} ⚠️ Failed to copy test files from base branch
+@{pr.author} ⚠️ Failed to discover tests from base branch
 
-Could not retrieve test files from `{pr.base_ref}` branch. This is required to ensure test integrity.
+Could not analyze test files from `{pr.base_ref}` branch. This is required to ensure test integrity.
 
-Details:
-```text
-{copy_log}
-```
+Error: {exc}
 """
         github.upsert_comment(pr, config.comments.marker, body)
-        github.set_status(pr, ValidationState.ERROR, "Failed to copy test files", config)
+        github.set_status(pr, ValidationState.ERROR, "Failed to discover base tests", config)
         return ValidationResult(
             state=ValidationState.ERROR,
-            reason="Failed to copy test files from base branch",
+            reason="Failed to discover base tests",
             phase="setup",
             notify_users=[f"@{pr.author}"],
         )
+    
+    # Step 2: Get PR branch tests (set B)
+    print("Discovering tests from PR branch...", file=sys.stderr)
+    pr_tests = test_selector.get_pr_tests()
+    print(f"Found {len(pr_tests)} tests in PR branch", file=sys.stderr)
+    
+    # Step 3: Compute new tests (N = B - A)
+    new_tests = test_selector.compute_new_tests(base_tests, pr_tests)
+    print(f"Detected {len(new_tests)} new tests in PR", file=sys.stderr)
+    
+    # Step 4: Build final test set (A ∪ N)
+    final_tests = test_selector.build_final_test_set(base_tests, new_tests)
+    print(f"Final test set: {len(final_tests)} tests", file=sys.stderr)
+    
+    # Log test selection details
+    if new_tests:
+        print("\nNew tests in PR:", file=sys.stderr)
+        for test in sorted(new_tests, key=str):
+            print(f"  + {test}", file=sys.stderr)
+    
+    modified_tests = pr_tests & base_tests
+    if len(modified_tests) < len(base_tests):
+        deleted_count = len(base_tests) - len(modified_tests)
+        print(f"\nNote: {deleted_count} base tests were deleted/modified in PR but will still run", file=sys.stderr)
+    
+    # Step 5: Prepare test environment with correct test files
+    print("\nPreparing test environment...", file=sys.stderr)
+    try:
+        test_dir = test_selector.prepare_test_environment(pr.base_ref, final_tests)
+        print(f"Test directory prepared: {test_dir}", file=sys.stderr)
+    except Exception as exc:
+        body = f"""{config.comments.marker}
+@{pr.author} ⚠️ Failed to prepare test environment
 
-    # Run setup and tests on PR branch (with base branch tests)
+Could not prepare test files for execution.
+
+Error: {exc}
+"""
+        github.upsert_comment(pr, config.comments.marker, body)
+        github.set_status(pr, ValidationState.ERROR, "Failed to prepare tests", config)
+        return ValidationResult(
+            state=ValidationState.ERROR,
+            reason="Failed to prepare test environment",
+            phase="setup",
+            notify_users=[f"@{pr.author}"],
+        )
+    
+    # Run setup and tests on PR branch (with selected tests)
     setup_result = run_setup(config, cwd)
     if setup_result is not None and not setup_result.passed:
         body = render_test_failure_comment(
@@ -251,6 +291,7 @@ Details:
             author=pr.author,
             test_result=setup_result,
             phase="setup",
+            new_tests=new_tests if new_tests else None,
         )
         github.upsert_comment(pr, config.comments.marker, body)
         _apply_outcome_label(github, pr, config, config.labels.test_failed)
@@ -264,13 +305,23 @@ Details:
             test_result=setup_result,
         )
 
-    test_result = run_tests(config, cwd)
+    # Run tests with the prepared test directory
+    print(f"\nRunning {len(final_tests)} tests...", file=sys.stderr)
+    test_result = run_tests(config, cwd, test_dir)
+    
+    # Cleanup temp directory
+    import shutil
+    try:
+        shutil.rmtree(test_dir)
+    except Exception:
+        pass  # Best effort cleanup
     if not test_result.passed:
         body = render_test_failure_comment(
             marker=config.comments.marker,
             author=pr.author,
             test_result=test_result,
             phase="test",
+            new_tests=new_tests if new_tests else None,
         )
         github.upsert_comment(pr, config.comments.marker, body)
         _apply_outcome_label(github, pr, config, config.labels.test_failed)
@@ -304,7 +355,11 @@ Details:
             notify_users=[f"@{pr.author}"],
         )
 
-    body = render_success_comment(marker=config.comments.marker)
+    body = render_success_comment(
+        marker=config.comments.marker,
+        base_test_count=len(base_tests),
+        new_tests=new_tests if new_tests else None,
+    )
     github.upsert_comment(pr, config.comments.marker, body)
     _apply_outcome_label(github, pr, config, config.labels.ready_for_review)
     github.set_status(pr, ValidationState.SUCCESS, "All checks passed. Ready for review.", config)

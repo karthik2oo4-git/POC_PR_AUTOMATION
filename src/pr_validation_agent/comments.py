@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Set
+
 from pr_validation_agent.models import TestRunResult
+from pr_validation_agent.test_selector import TestIdentifier
 
 
 def _format_log_excerpt(result: TestRunResult, max_lines: int = 40) -> str:
@@ -17,8 +20,17 @@ def render_test_failure_comment(
     author: str,
     test_result: TestRunResult,
     phase: str = "test",
+    new_tests: Set[TestIdentifier] | None = None,
 ) -> str:
     phase_title = "Repository setup failed" if phase == "setup" else "Unit tests failed"
+    
+    # Build new tests section if provided
+    new_tests_section = ""
+    if new_tests and len(new_tests) > 0:
+        new_tests_section = "\n\n**New tests added in this PR:**\n"
+        for test in sorted(new_tests, key=str):
+            new_tests_section += f"- `{test}`\n"
+    
     return f"""{marker}
 @{author} ❌ {phase_title}
 
@@ -33,7 +45,7 @@ What to check in GitHub:
 Command: `{test_result.command}`
 Exit code: `{test_result.exit_code}`
 Log excerpt:
-{_format_log_excerpt(test_result)}"""
+{_format_log_excerpt(test_result)}{new_tests_section}"""
 
 
 def render_merge_conflict_comment(*, marker: str, author: str, base_ref: str, merge_log: str) -> str:
@@ -51,9 +63,30 @@ Merge output:
 """
 
 
-def render_success_comment(*, marker: str) -> str:
+def render_success_comment(
+    *,
+    marker: str,
+    base_test_count: int = 0,
+    new_tests: Set[TestIdentifier] | None = None,
+) -> str:
+    # Build test summary
+    test_summary = ""
+    if base_test_count > 0:
+        test_summary = f"\n\n**Test Summary:**\n- Base branch tests: {base_test_count}"
+        
+        if new_tests and len(new_tests) > 0:
+            test_summary += f"\n- New tests in PR: {len(new_tests)}"
+            test_summary += f"\n- Total tests executed: {base_test_count + len(new_tests)}"
+            
+            test_summary += "\n\n**New tests added in this PR:**\n"
+            for test in sorted(new_tests, key=str):
+                test_summary += f"- `{test}`\n"
+        else:
+            test_summary += f"\n- Total tests executed: {base_test_count}"
+            test_summary += "\n- No new tests added in this PR"
+    
     return f"""{marker}
 ✅ All configured setup and unit-test checks passed.
 
-GitHub can now allow merge when this workflow is marked as a required status check in branch protection.
+GitHub can now allow merge when this workflow is marked as a required status check in branch protection.{test_summary}
 """
