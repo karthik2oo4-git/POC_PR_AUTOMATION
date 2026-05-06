@@ -66,37 +66,65 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
     
     Args:
         config: Application configuration
-        cwd: Current working directory
+        cwd: Current working directory (repo root - where source code lives)
         test_dir: Optional custom test directory (for test selection)
+                  When provided, pytest will ONLY discover tests from this directory
     
     Returns:
         TestRunResult with execution details
     """
     started = time.monotonic()
     
-    # Build test command
+    # Build test command with proper isolation
     if test_dir:
-        # Run tests ONLY from custom directory, disable auto-discovery
-        test_command = config.tests.command.replace("tests/", str(test_dir) + "/")
-        test_command = test_command.replace("test/", str(test_dir) + "/")
-        # If no path in command, append the test directory and disable discovery
-        if "tests" not in test_command and "test" not in test_command:
-            # For pytest: explicitly specify directory and disable auto-discovery from cwd
-            if "pytest" in test_command:
-                test_command = f"{test_command} {test_dir} --ignore=tests --ignore=test"
-            else:
-                test_command = f"{test_command} {test_dir}"
+        # CRITICAL: Ensure pytest ONLY discovers tests from test_dir
+        # Strategy:
+        # 1. Use absolute path to test directory
+        # 2. Set --rootdir to test directory to prevent upward discovery
+        # 3. Run pytest from repo root (cwd) so imports work correctly
+        # 4. This ensures: tests from test_dir, code from cwd
+        
+        abs_test_dir = test_dir.resolve()
+        
+        # Extract base pytest command (remove any existing paths)
+        base_command = config.tests.command
+        # Remove common test paths from command
+        for pattern in ["tests/", "test/", "tests", "test"]:
+            base_command = base_command.replace(pattern, "").strip()
+        
+        # Build isolated test command
+        # --rootdir: Sets pytest's root directory (prevents discovery outside test_dir)
+        # -v: Verbose output to see which tests are actually running
+        # The test directory path must come AFTER pytest command but BEFORE other flags
+        if "pytest" in base_command:
+            # Insert test directory and rootdir right after pytest command
+            parts = base_command.split()
+            pytest_idx = next(i for i, p in enumerate(parts) if "pytest" in p)
+            # Reconstruct: [before pytest] pytest [test_dir] --rootdir=[test_dir] [other flags]
+            test_command = " ".join(parts[:pytest_idx+1]) + \
+                          f" {abs_test_dir} --rootdir={abs_test_dir} -v " + \
+                          " ".join(parts[pytest_idx+1:])
+        else:
+            # Non-pytest command, just append directory
+            test_command = f"{base_command} {abs_test_dir}"
+        
+        # Debug: Print the actual command being executed
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"EXECUTING TEST COMMAND:", file=sys.stderr)
+        print(f"Command: {test_command}", file=sys.stderr)
+        print(f"Working directory: {cwd}", file=sys.stderr)
+        print(f"Test directory: {test_dir}", file=sys.stderr)
+        print(f"Absolute test directory: {abs_test_dir}", file=sys.stderr)
+        print(f"{'='*60}\n", file=sys.stderr)
     else:
         test_command = config.tests.command
-    
-    # Debug: Print the actual command being executed
-    print(f"\n{'='*60}", file=sys.stderr)
-    print(f"EXECUTING TEST COMMAND:", file=sys.stderr)
-    print(f"Command: {test_command}", file=sys.stderr)
-    print(f"Working directory: {cwd}", file=sys.stderr)
-    if test_dir:
-        print(f"Test directory: {test_dir}", file=sys.stderr)
-    print(f"{'='*60}\n", file=sys.stderr)
+        
+        # Debug: Print the actual command being executed
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"EXECUTING TEST COMMAND:", file=sys.stderr)
+        print(f"Command: {test_command}", file=sys.stderr)
+        print(f"Working directory: {cwd}", file=sys.stderr)
+        print(f"{'='*60}\n", file=sys.stderr)
     
     try:
         result = subprocess.run(
@@ -222,6 +250,38 @@ def _enable_auto_merge(github: GitHubClient, pr: PullRequestContext, config: App
 
 
 def validate() -> ValidationResult:
+    """
+    Main validation workflow implementing intelligent test selection.
+    
+    SECURITY FEATURE: Test Integrity Protection
+    ===========================================
+    This workflow prevents PRs from hiding bugs by modifying both code AND tests.
+    
+    How it works (Set Theory):
+    1. Discover base tests (Set A) - tests from base branch
+    2. Discover PR tests (Set B) - tests from PR branch
+    3. Compute new tests (Set N = B - A) - tests added in PR
+    4. Build final set (A ∪ N) - run base tests + new tests
+    5. Prepare environment:
+       - For tests in A: use BASE branch version of test file
+       - For tests in N: use PR branch version of test file
+    6. Run tests against PR branch source code
+    
+    Why this works:
+    - Base tests (A) use base version → can't be modified to hide bugs
+    - New tests (N) use PR version → can test new functionality
+    - Even if PR deletes tests, we still run them from base
+    - Even if PR modifies tests, we run original version
+    
+    Example Attack Scenario (PREVENTED):
+    - Base: def subtract(a, b): return a - b, test: assert subtract(10, 4) == 6
+    - PR: def subtract(a, b): return a * b, test: assert subtract(10, 4) == 40
+    - Without protection: Test passes (40 == 40) ✓ BUG HIDDEN!
+    - With protection: Test fails (40 != 6) ✗ BUG CAUGHT!
+    
+    Returns:
+        ValidationResult with state, reason, and metadata
+    """
     cwd = Path.cwd()
     config = AppConfig.load(os.getenv("PR_VALIDATION_CONFIG", ".github/pr-validation.yml"))
     github = GitHubClient.from_env()
@@ -235,11 +295,15 @@ def validate() -> ValidationResult:
     # Initialize test selector with intelligent test selection
     test_selector = TestSelector(cwd, test_paths)
     
-    # Step 1: Get base branch tests (set A)
-    print("Discovering tests from base branch...", file=sys.stderr)
+    # ============================================================================
+    # STEP 1: Discover base branch tests (Set A)
+    # ============================================================================
+    print("\n" + "="*60, file=sys.stderr)
+    print("STEP 1: Discovering tests from base branch...", file=sys.stderr)
+    print("="*60, file=sys.stderr)
     try:
         base_tests = test_selector.get_base_tests(pr.base_ref)
-        print(f"Found {len(base_tests)} tests in base branch", file=sys.stderr)
+        print(f"✓ Found {len(base_tests)} tests in base branch (Set A)", file=sys.stderr)
     except Exception as exc:
         body = f"""{config.comments.marker}
 @{pr.author} ⚠️ Failed to discover tests from base branch
@@ -257,35 +321,54 @@ Error: {exc}
             notify_users=[f"@{pr.author}"],
         )
     
-    # Step 2: Get PR branch tests (set B)
-    print("Discovering tests from PR branch...", file=sys.stderr)
+    # ============================================================================
+    # STEP 2: Discover PR branch tests (Set B)
+    # ============================================================================
+    print("\n" + "="*60, file=sys.stderr)
+    print("STEP 2: Discovering tests from PR branch...", file=sys.stderr)
+    print("="*60, file=sys.stderr)
     pr_tests = test_selector.get_pr_tests()
-    print(f"Found {len(pr_tests)} tests in PR branch", file=sys.stderr)
+    print(f"✓ Found {len(pr_tests)} tests in PR branch (Set B)", file=sys.stderr)
     
-    # Step 3: Compute new tests (N = B - A)
+    # ============================================================================
+    # STEP 3: Compute new tests (Set N = B - A)
+    # ============================================================================
+    print("\n" + "="*60, file=sys.stderr)
+    print("STEP 3: Computing new tests...", file=sys.stderr)
+    print("="*60, file=sys.stderr)
     new_tests = test_selector.compute_new_tests(base_tests, pr_tests)
-    print(f"Detected {len(new_tests)} new tests in PR", file=sys.stderr)
+    print(f"✓ Detected {len(new_tests)} new tests in PR (Set N = B - A)", file=sys.stderr)
     
-    # Step 4: Build final test set (A ∪ N)
+    # ============================================================================
+    # STEP 4: Build final test set (A ∪ N)
+    # ============================================================================
+    print("\n" + "="*60, file=sys.stderr)
+    print("STEP 4: Building final test set...", file=sys.stderr)
+    print("="*60, file=sys.stderr)
     final_tests = test_selector.build_final_test_set(base_tests, new_tests)
-    print(f"Final test set: {len(final_tests)} tests", file=sys.stderr)
+    print(f"✓ Final test set: {len(final_tests)} tests (A ∪ N)", file=sys.stderr)
     
-    # Log test selection details
+    # Log test selection details for transparency
     if new_tests:
-        print("\nNew tests in PR:", file=sys.stderr)
+        print("\nNew tests in PR (Set N):", file=sys.stderr)
         for test in sorted(new_tests, key=str):
             print(f"  + {test}", file=sys.stderr)
     
+    # Check for deleted/modified tests
     modified_tests = pr_tests & base_tests
     if len(modified_tests) < len(base_tests):
         deleted_count = len(base_tests) - len(modified_tests)
-        print(f"\nNote: {deleted_count} base tests were deleted/modified in PR but will still run", file=sys.stderr)
+        print(f"\n⚠️  Note: {deleted_count} base test(s) were deleted in PR but will still run from base branch", file=sys.stderr)
     
-    # Step 5: Prepare test environment with correct test files
-    print("\nPreparing test environment...", file=sys.stderr)
+    # ============================================================================
+    # STEP 5: Prepare test environment with correct test files
+    # ============================================================================
+    print("\n" + "="*60, file=sys.stderr)
+    print("STEP 5: Preparing test environment...", file=sys.stderr)
+    print("="*60, file=sys.stderr)
     try:
         test_dir = test_selector.prepare_test_environment(pr.base_ref, final_tests, base_tests)
-        print(f"Test directory prepared: {test_dir}", file=sys.stderr)
+        print(f"✓ Test directory prepared: {test_dir}", file=sys.stderr)
     except Exception as exc:
         body = f"""{config.comments.marker}
 @{pr.author} ⚠️ Failed to prepare test environment
@@ -303,7 +386,12 @@ Error: {exc}
             notify_users=[f"@{pr.author}"],
         )
     
-    # Run setup and tests on PR branch (with selected tests)
+    # ============================================================================
+    # STEP 6: Run setup commands (if configured)
+    # ============================================================================
+    print("\n" + "="*60, file=sys.stderr)
+    print("STEP 6: Running setup commands...", file=sys.stderr)
+    print("="*60, file=sys.stderr)
     setup_result = run_setup(config, cwd)
     if setup_result is not None and not setup_result.passed:
         body = render_test_failure_comment(
@@ -325,16 +413,27 @@ Error: {exc}
             test_result=setup_result,
         )
 
-    # Run tests with the prepared test directory
-    print(f"\nRunning {len(final_tests)} tests...", file=sys.stderr)
+    # ============================================================================
+    # STEP 7: Run tests with prepared test directory
+    # ============================================================================
+    # CRITICAL: Tests run from temp directory (isolated test files)
+    #           but against source code from cwd (PR branch code)
+    # This ensures: base test expectations vs PR code behavior
+    print("\n" + "="*60, file=sys.stderr)
+    print("STEP 7: Running tests...", file=sys.stderr)
+    print("="*60, file=sys.stderr)
+    print(f"Running {len(final_tests)} tests from isolated directory", file=sys.stderr)
+    print(f"Tests: {test_dir}", file=sys.stderr)
+    print(f"Code: {cwd}", file=sys.stderr)
     test_result = run_tests(config, cwd, test_dir)
     
-    # Cleanup temp directory
+    # Cleanup temp directory (best effort)
     import shutil
     try:
         shutil.rmtree(test_dir)
+        print(f"✓ Cleaned up temp directory", file=sys.stderr)
     except Exception:
-        pass  # Best effort cleanup
+        pass  # Non-critical, temp dir will be cleaned by OS eventually
     if not test_result.passed:
         body = render_test_failure_comment(
             marker=config.comments.marker,
