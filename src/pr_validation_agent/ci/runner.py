@@ -75,6 +75,13 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
     """
     started = time.monotonic()
     
+    # Clean up __pycache__ directories to prevent import conflicts
+    if test_dir:
+        import shutil
+        for pycache in test_dir.rglob("__pycache__"):
+            shutil.rmtree(pycache, ignore_errors=True)
+        print(f"✓ Cleaned up __pycache__ directories in test directory", file=sys.stderr)
+    
     # Build test command with proper isolation
     if test_dir:
         # CRITICAL: Ensure pytest ONLY discovers tests from test_dir
@@ -82,7 +89,8 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
         # 1. Use absolute path to test directory
         # 2. Set --rootdir to test directory to prevent upward discovery
         # 3. Run pytest from repo root (cwd) so imports work correctly
-        # 4. This ensures: tests from test_dir, code from cwd
+        # 4. Use --import-mode=importlib to handle duplicate test file names in subdirectories
+        # 5. This ensures: tests from test_dir, code from cwd
         
         abs_test_dir = test_dir.resolve()
         
@@ -100,14 +108,15 @@ def run_tests(config: AppConfig, cwd: Path, test_dir: Path | None = None) -> Tes
         
         # Build isolated test command
         # --rootdir: Sets pytest's root directory (prevents discovery outside test_dir)
+        # --import-mode=importlib: Allows duplicate test file names in subdirectories (pytest 6.0+)
         # The test directory path must come AFTER pytest command but BEFORE other flags
         if "pytest" in base_command:
             # Insert test directory and rootdir right after pytest command
             parts = base_command.split()
             pytest_idx = next(i for i, p in enumerate(parts) if "pytest" in p)
-            # Reconstruct: [before pytest] pytest [test_dir] --rootdir=[test_dir] [other flags]
+            # Reconstruct: [before pytest] pytest [test_dir] --rootdir=[test_dir] --import-mode=importlib [other flags]
             test_command = " ".join(parts[:pytest_idx+1]) + \
-                          f" {abs_test_dir} --rootdir={abs_test_dir} " + \
+                          f" {abs_test_dir} --rootdir={abs_test_dir} --import-mode=importlib " + \
                           " ".join(parts[pytest_idx+1:])
         else:
             # Non-pytest command, just append directory
