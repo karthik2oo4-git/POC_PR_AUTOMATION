@@ -1,16 +1,17 @@
-FROM ghcr.io/astral-sh/uv:0.10.7 AS uv
-
-FROM python:3.11-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
 WORKDIR /app
-COPY --from=uv /uv /usr/local/bin/uv
-COPY pyproject.toml uv.lock README.md ./
+
+COPY pyproject.toml README.md ./
+RUN uv sync --no-dev --no-install-project
+
 COPY src ./src
+COPY .env.example ./.env.example
 
-RUN uv sync --frozen --no-dev
+RUN uv sync --no-dev
 
-CMD ["pr-validation-ci"]
+EXPOSE 8000
+
+CMD ["uv", "run", "uvicorn", "github_ci_governance_app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Made with Bob
